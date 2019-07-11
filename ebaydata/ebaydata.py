@@ -1,7 +1,6 @@
 import pandas as pd
 from ebaysdk.exception import ConnectionError
 from ebaysdk.finding import Connection as Finding
-from tqdm import tqdm
 
 
 # TODO:
@@ -10,8 +9,8 @@ from tqdm import tqdm
 # findItemsByKeywords
 # getHistograms
 # getSearchKeywordsRecommendation
-
-# Include itemFilter as dict like 'itemFilter':{'name':'SoldItemsOnly', 'value': 'true'},
+# Eventually use this: 'GetCategoryInfo' to get valid category ids
+# Include itemFilter as dict like 'itemFilter':[{'name':'SoldItemsOnly', 'value': 'true'}],
 
 # search variation:
 # baseball card  (both words) baseball,card (exact phrase baseball card)
@@ -21,22 +20,24 @@ from tqdm import tqdm
 
 class EasyEbayData:
 
-    def __init__(self, apiId, keywords, wanted_pages=False, searchType="findItemsAdvanced",
-                 categoryId=None, itemFilter=None):
-        self.api = Finding(appid=apiId, config_file=None)
-        self.totalEntries = 0
-        self.searchType = searchType
+    def __init__(self, api_id, keywords, wanted_pages=False, search_type="findItemsByKeywords",
+                 category_id=None, item_filter=False):
+        self.api = Finding(appid=api_id, config_file=None)
+        self.search_type = search_type
         self.keywords = keywords
-        self.wanted_pages = wanted_pages
+        self.total_pages = 0
+        self.total_entries = 0
+        self.wanted_pages = wanted_pages  # must be at least 1 & integer
+        self.item_filter = item_filter  # should be a list of dictionaries
+        self.search_url = ""
         # TO INCLUDE LATER
         # below will be a list for findItemsByCategory (max: 3, will need to be specified separately for each one)
-        self.categoryId = categoryId
-        self.itemFilter = itemFilter
+        self.category_id = category_id
 
     def unembed_ebay_item_data(self, list_of_item_dics):
         unembedded = []
         for ebay_item in list_of_item_dics:
-            assert isinstance(ebay_item, dict), "The data should be a list of dictionaries, if it isn't the API has changed."
+            assert isinstance(ebay_item, dict), "The data should be returning a list of dictionaries."
             unembedded_dict = dict()
             for key, val in ebay_item.items():
                 if isinstance(val, dict):
@@ -54,12 +55,14 @@ class EasyEbayData:
     def test_connection(self):
         """Tests that an initial API connection is successful"""
         try:
-            response = self.api.execute(self.searchType, {'keywords': self.keywords,
-                                                          'paginationInput': {'pageNumber': 1,
-                                                                              'entriesPerPage': 100},
-                                                          'itemFilter': {}})
+            # Might simplify this
+            response = self.api.execute(self.search_type, {'keywords': self.keywords,
+                                                           'paginationInput': {'pageNumber': 1,
+                                                                               'entriesPerPage': 100},
+                                                           'itemFilter': self.item_filter})
             assert response.reply.ack == 'Success'
             print('Successfully Connected to API!')
+            self.search_url = response.dict()['itemSearchURL']
             return response
         except ConnectionError:
             print('Connection Error! Ensure that your API key was correctly entered.')
@@ -67,33 +70,40 @@ class EasyEbayData:
 
     def get_wanted_pages(self, response):
         """response comes from test_connection to access total pages without making another API call"""
-        totalPages = int(response.reply.paginationOutput.totalPages)
-        self.totalEntries = int(response.reply.paginationOutput.entriesPerPage)
+        self.total_pages = int(response.reply.paginationOutput.totalPages)
+        self.total_entries = int(response.reply.paginationOutput.totalEntries)
         if self.wanted_pages:
             # can't pull more than max pages
-            pages2pull = min([totalPages, self.wanted_pages])
+            pages2pull = min([self.total_pages, self.wanted_pages])
         else:
-            pages2pull = totalPages
-        return pages2pull + 1
+            pages2pull = self.total_pages
+        return pages2pull
 
     def get_ebay_item_info(self):
+        all_items = []
 
         response = self.test_connection()
 
         if not response:
-            return
+            return None
+
+        # Add initial items from test
+        data = response.dict()['searchResult']['item']
+        all_items.extend(self.unembed_ebay_item_data(data))
 
         pages2pull = self.get_wanted_pages(response)
 
-        all_items = []
+        if pages2pull < 2:  # stop if only pulling one page or only one page exists
+            return pd.DataFrame(all_items)
 
         total_errors = 0
 
-        for page in tqdm(range(1, pages2pull)):
-            response = self.api.execute(self.searchType, {'keywords': self.keywords,
-                                                          'paginationInput': {'pageNumber': page,
-                                                                              'entriesPerPage': 100},
-                                                          'itemFilter': {}})
+        for page in range(2, pages2pull + 1):
+            response = self.api.execute(self.search_type, {'keywords': self.keywords,
+                                                           'paginationInput': {'pageNumber': page,
+                                                                               'entriesPerPage': 100},
+                                                           'itemFilter': self.item_filter,
+                                                           })
             if response.reply.ack == 'Success':
                 data = response.dict()['searchResult']['item']
                 all_items.extend(self.unembed_ebay_item_data(data))
