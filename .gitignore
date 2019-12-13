@@ -2,3 +2,4 @@ venv/
 *ipynb
 *.csv
 .DS_Store
+*.idea/
